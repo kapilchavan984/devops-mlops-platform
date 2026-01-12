@@ -1,0 +1,441 @@
+Docker Architecture Under the Hood
+How Docker Desktop Works (Windows/Mac)
+Docker Desktop isn't just Docker Engine—it's a complete virtualization setup because Docker needs a Linux kernel.
+On Windows:
+
+Docker Desktop runs a lightweight Linux VM using either WSL 2 (Windows Subsystem for Linux 2) or Hyper-V
+WSL 2 is preferred: it's faster, uses less memory, and has better file system performance
+The actual Docker daemon runs inside this Linux VM
+Docker Desktop provides the Windows GUI, CLI integration, and handles networking between Windows and the VM
+
+WSL 2 Architecture:
+Your Windows Machine
+├─ Docker Desktop (GUI/Manager)
+├─ WSL 2 Linux Kernel
+│  └─ Lightweight VM (minimal overhead)
+│     └─ Docker Daemon (dockerd)
+│        └─ containerd (container runtime)
+│           └─ runc (creates/runs containers)
+└─ Docker CLI (Windows binary that talks to daemon in VM)
+On Mac:
+
+Uses a lightweight hypervisor (HyperKit on Intel, Virtualization.framework on Apple Silicon)
+Similar to Windows: Docker daemon runs in a Linux VM, Docker Desktop manages it
+File sharing between macOS and containers happens through volume mounts that cross the VM boundary
+
+Performance Implications:
+
+File I/O across the VM boundary is slower (especially on Mac)
+Solution: Use volumes for database data, avoid bind mounts for performance-critical operations
+On Mac: Using delegated/cached mount modes can help
+
+Docker Engine Components (Linux Native)
+When you install Docker Engine on Linux, you're installing several components:
+The Stack:
+docker (CLI)
+    ↓
+docker daemon (dockerd) - API server, image management, network/volume orchestration
+    ↓
+containerd - Container lifecycle management, image pull/push
+    ↓
+runc - Low-level container runtime (creates namespaces, cgroups)
+    ↓
+Linux Kernel - Provides isolation primitives
+containerd:
+
+Industry-standard container runtime (used by Kubernetes too)
+Manages container lifecycle: start, stop, pause, delete
+Handles image transfer and storage
+Can be used independently of Docker
+
+runc:
+
+Reference implementation of OCI (Open Container Initiative) runtime spec
+Actually spawns and runs containers
+Creates Linux namespaces and cgroups
+Written in Go, extremely lightweight
+
+Why this layered approach?
+
+Modularity: each component can be updated independently
+Standardization: containerd and runc follow OCI standards
+Kubernetes compatibility: K8s can use containerd directly, bypassing Docker daemon
+
+Deep Dive: daemon.json Configuration
+Complete Configuration Example
+json{
+  "data-root": "/mnt/docker-data",
+  "storage-driver": "overlay2",
+  "storage-opts": [
+    "overlay2.override_kernel_check=true"
+  ],
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "5",
+    "compress": "true"
+  },
+  "default-address-pools": [
+    {
+      "base": "172.80.0.0/16",
+      "size": 24
+    }
+  ],
+  "dns": ["8.8.8.8", "8.8.4.4"],
+  "insecure-registries": ["myregistry.local:5000"],
+  "registry-mirrors": ["https://mirror.gcr.io"],
+  "max-concurrent-downloads": 3,
+  "max-concurrent-uploads": 5,
+  "debug": false,
+  "experimental": false,
+  "metrics-addr": "127.0.0.1:9323",
+  "live-restore": true,
+  "userland-proxy": false,
+  "icc": true,
+  "default-ulimits": {
+    "nofile": {
+      "Name": "nofile",
+      "Hard": 64000,
+      "Soft": 64000
+    }
+  }
+}
+```
+
+### Key Configuration Options Explained
+
+**data-root:**
+- Default location where Docker stores images, containers, volumes
+- Change this if your root partition has limited space
+- Default: `/var/lib/docker` (Linux), managed by Docker Desktop (Win/Mac)
+
+**storage-driver:**
+- `overlay2`: Modern, efficient, default for most Linux distros
+- `aufs`: Older, still used on some systems
+- `devicemapper`: Used on older RHEL/CentOS
+- `btrfs`, `zfs`: For systems using these filesystems
+
+**How overlay2 works:**
+Each layer is a directory. Docker uses the Linux OverlayFS to merge them:
+```
+/var/lib/docker/overlay2/
+├─ layer1/  (base image layer)
+├─ layer2/  (dependency layer)
+├─ layer3/  (app layer)
+└─ layer4/  (container writable layer)
+The union mount makes them appear as one filesystem inside the container.
+log-driver options:
+
+json-file: Default, stores logs as JSON on disk
+syslog: Forward to syslog daemon
+journald: Use systemd's journal (recommended for systemd systems)
+gelf: Send to Graylog
+fluentd: Forward to Fluentd
+none: Disable logging (use sparingly!)
+
+Why limit log size?
+Without limits, a chatty container can fill your disk. The max-size and max-file settings implement log rotation.
+default-address-pools:
+Controls subnet allocation for bridge networks. Default is 172.17.0.0/16, but if you're creating many networks or have IP conflicts, customize this.
+dns:
+Custom DNS servers for containers. Useful when Docker's automatic DNS detection fails or you need specific resolvers.
+insecure-registries:
+Allows HTTP (not HTTPS) registries. Use only for trusted internal registries during development.
+registry-mirrors:
+Proxy registries to speed up pulls and reduce bandwidth. Especially useful in corporate environments.
+live-restore:
+Keeps containers running if the Docker daemon crashes or during daemon upgrades. Critical for production systems.
+userland-proxy:
+When false, uses iptables for port forwarding (more efficient). When true, Docker creates a userland proxy process per published port (older behavior, more resource-intensive).
+icc (inter-container connectivity):
+When true (default), containers on the same bridge network can communicate. Set to false for additional isolation, then explicitly link containers.
+Docker Run: What Actually Happens
+Let's trace docker run hello-world in detail:
+Step 1: CLI Parsing
+bashdocker run hello-world
+```
+
+The CLI parses this into:
+- Command: `run`
+- Image: `hello-world`
+- Tag: `latest` (implicit)
+- No additional flags
+
+### Step 2: API Request
+CLI sends HTTP POST to Docker daemon (via Unix socket `/var/run/docker.sock` or Windows named pipe):
+```
+POST /v1.43/containers/create
+{
+  "Image": "hello-world:latest",
+  "AttachStdout": true,
+  "AttachStderr": true
+}
+Step 3: Image Resolution
+Daemon checks local image store:
+bashls /var/lib/docker/overlay2/imagedb/content/sha256/
+```
+
+If not found, daemon contacts Docker Hub:
+1. Resolves `hello-world` to `library/hello-world` (official image)
+2. Queries manifest: `https://registry-1.docker.io/v2/library/hello-world/manifests/latest`
+3. Downloads layers referenced in manifest
+4. Verifies checksums
+5. Extracts layers to storage driver location
+
+### Step 4: Container Creation
+Daemon asks containerd to create a container:
+```
+# Containerd creates OCI bundle
+/var/run/docker/containerd/
+└─ daemon/
+   └─ io.containerd.runtime.v2.task/
+      └─ moby/
+         └─ <container-id>/
+            ├─ config.json (OCI runtime spec)
+            └─ rootfs/ (merged filesystem layers)
+Step 5: Container Startup
+containerd calls runc:
+bashrunc create <container-id>
+runc performs:
+
+Namespace creation: PID, network, mount, UTS, IPC, user namespaces
+Cgroup setup: Resource limits (CPU, memory, I/O)
+Rootfs preparation: Mount layers using overlay2
+Process spawn: Execute the container's entrypoint
+
+Step 6: Execution & Output
+
+Container process runs (prints message)
+stdout/stderr captured by Docker daemon
+Streamed back to CLI
+Process exits with code 0
+Container stops but remains in system (status: Exited)
+
+CLI Commands: Advanced Usage
+docker ps - Process Status Deep Dive
+bash# Basic usage
+docker ps
+
+# Show all containers with size
+docker ps -a -s
+
+# Custom format using Go templates
+docker ps --format "table {{.ID}}\t{{.Image}}\t{{.Status}}\t{{.Names}}"
+
+# Filter examples
+docker ps --filter "status=running"
+docker ps --filter "ancestor=nginx"
+docker ps --filter "name=web"
+docker ps --filter "expose=80"
+
+# Last n containers
+docker ps -n 5
+
+# Show only container IDs (useful for scripting)
+docker ps -q
+Understanding the output columns:
+
+CONTAINER ID: First 12 chars of full SHA-256 hash
+IMAGE: Image name and tag used
+COMMAND: Entrypoint/CMD from image (truncated)
+CREATED: Time since container was created
+STATUS:
+
+Up X minutes: Running for X minutes
+Exited (0): Stopped successfully
+Exited (137): Killed (often OOM or SIGKILL)
+Restarting: In restart loop
+
+
+PORTS: Format 0.0.0.0:8080->80/tcp means host port 8080 maps to container port 80
+NAMES: Auto-generated (adjective_noun) or user-specified
+
+Container ID vs Name:
+bash# Both work identically
+docker stop a1b2c3d4e5f6  # Using ID
+docker stop my-container   # Using name
+
+# You can use short ID (first few unique characters)
+docker stop a1b  # Works if no other container ID starts with a1b
+docker images - Deep Dive
+bash# List all images
+docker images
+
+# Show all images including intermediates
+docker images -a
+
+# Show image digests (SHA-256 of image manifest)
+docker images --digests
+
+# Filter images
+docker images --filter "dangling=true"  # Untagged images (<none>)
+docker images --filter "before=nginx"
+docker images --filter "since=ubuntu:20.04"
+docker images --filter "reference=*:latest"
+
+# Custom format
+docker images --format "{{.Repository}}:{{.Tag}} - {{.Size}}"
+
+# Show image history (layers)
+docker history nginx
+
+# Inspect image metadata (JSON)
+docker inspect nginx
+Understanding image sizes:
+bashdocker images
+# REPOSITORY   TAG       IMAGE ID       CREATED       SIZE
+# nginx        latest    a1b2c3d4e5f6   2 weeks ago   142MB
+# ubuntu       22.04     b2c3d4e5f6a7   3 weeks ago   77.8MB
+The SIZE shown is the virtual size (all layers combined). But layers are shared:
+bash# If nginx is built FROM ubuntu:22.04
+# Actual disk usage is NOT 142MB + 77.8MB = 219.8MB
+# It's 142MB total because ubuntu's layers are reused
+
+docker system df  # Shows actual disk usage
+Dangling images:
+Created during builds, tagged as <none>. Happen when you rebuild an image with the same tag:
+bash# Clean them up
+docker image prune
+
+# Remove all unused images (not just dangling)
+docker image prune -a
+docker version - Understanding Output
+bashdocker version
+Output shows two sections:
+Client:
+
+Version: Docker CLI version
+API version: Version of API the CLI will use
+Go version: Go runtime used to build CLI
+OS/Arch: Your operating system and CPU architecture
+
+Server (Engine):
+
+Version: Docker daemon version
+API version: Version daemon supports
+Minimum API version: Oldest API version daemon accepts (for backward compatibility)
+Go version: Go runtime for daemon
+OS/Arch: Where daemon is running (for Docker Desktop, this is Linux even on Windows/Mac!)
+
+Version compatibility:
+The CLI can be older or newer than the daemon within limits. The daemon's "Minimum API version" ensures older clients work.
+Advanced Installation Topics
+Post-Installation Steps (Linux)
+Enable Docker to start on boot:
+bashsudo systemctl enable docker.service
+sudo systemctl enable containerd.service
+Configure log rotation for Docker logs:
+bash# Edit /etc/logrotate.d/docker
+/var/lib/docker/containers/*/*.log {
+  rotate 7
+  daily
+  compress
+  missingok
+  delaycompress
+  copytruncate
+}
+Kernel parameter tuning for production:
+bash# Add to /etc/sysctl.conf
+net.ipv4.ip_forward=1
+net.bridge.bridge-nf-call-iptables=1
+net.bridge.bridge-nf-call-ip6tables=1
+vm.max_map_count=262144  # For Elasticsearch containers
+
+# Apply changes
+sudo sysctl -p
+Security Hardening
+Run Docker daemon in rootless mode:
+bash# Install rootless Docker
+dockerd-rootless-setuptool.sh install
+
+# Daemon runs as your user, containers run in user namespace
+# More secure but some limitations (no privileged containers)
+Enable Docker Content Trust:
+bash# In your .bashrc or .zshrc
+export DOCKER_CONTENT_TRUST=1
+
+# Now all images must be signed
+# Prevents pulling tampered images
+Storage Driver Selection
+Check current driver:
+bashdocker info | grep "Storage Driver"
+When to use which:
+
+overlay2: Default, best for most use cases
+aufs: Legacy, avoid unless on old kernel
+devicemapper: RHEL/CentOS 7, use direct-lvm mode in production
+btrfs/zfs: If your host uses these filesystems, Docker can leverage their features (snapshots, CoW)
+
+Switching storage drivers:
+bash# WARNING: Destroys all images/containers
+sudo systemctl stop docker
+sudo rm -rf /var/lib/docker
+# Edit daemon.json to set new driver
+sudo systemctl start docker
+Monitoring Docker Daemon
+Check daemon logs:
+bash# Linux with systemd
+sudo journalctl -u docker.service -f
+
+# Docker Desktop
+# GUI: Settings → Troubleshoot → View logs
+Enable debug logging:
+json{
+  "debug": true,
+  "log-level": "debug"
+}
+Prometheus metrics:
+json{
+  "metrics-addr": "127.0.0.1:9323",
+  "experimental": true
+}
+Access metrics at http://localhost:9323/metrics - integrate with Prometheus for monitoring.
+Practical Deep-Dive Exercise
+Try this comprehensive workflow:
+bash# 1. Inspect your Docker installation
+docker version  # Note client vs server versions
+docker info | less  # Read through all settings
+
+# 2. Configure daemon
+sudo nano /etc/docker/daemon.json  # Linux
+# Or Docker Desktop → Settings → Docker Engine
+
+# Add logging limits and custom network pool
+# Restart Docker after saving
+
+# 3. Pull and examine an image
+docker pull alpine:latest
+docker images --digests  # Note the SHA256
+docker history alpine  # See how it was built
+docker inspect alpine | jq '.[0].RootFS.Layers'  # See layer hashes
+
+# 4. Run container with detailed options
+docker run -d \
+  --name test-container \
+  --memory="512m" \
+  --cpus="1.0" \
+  --log-driver json-file \
+  --log-opt max-size=10m \
+  -p 8080:80 \
+  nginx:alpine
+
+# 5. Inspect running container
+docker ps -s  # Note the size
+docker inspect test-container | jq '.[0].NetworkSettings'
+docker stats test-container  # Real-time resource usage
+docker logs -f test-container  # Follow logs
+
+# 6. Examine filesystem
+docker exec test-container ls -la /
+docker diff test-container  # See what changed from base image
+
+# 7. Check resource usage
+docker system df  # Disk usage summary
+docker system df -v  # Verbose breakdown
+
+# 8. Clean up
+docker stop test-container
+docker rm test-container
+docker rmi nginx:alpine alpine:latest
+docker system prune  # Remove unused data
+This deep dive gives you a solid understanding of Docker's internal workings, configuration options, and troubleshooting capabilities—crucial knowledge for production deployments.
