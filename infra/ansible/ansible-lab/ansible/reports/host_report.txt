@@ -1,0 +1,2 @@
+HOST=node1 | IP=172.18.0.2 | OS=Ubuntu 22.04 | KERNEL=6.8.0-1030-azure | CPU=2 | RAM=7944MB
+HOST=node2 | IP=172.18.0.4 | OS=Ubuntu 22.04 | KERNEL=6.8.0-1030-azure | CPU=2 | RAM=7944MB
