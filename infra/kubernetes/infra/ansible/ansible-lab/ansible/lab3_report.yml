@@ -1,0 +1,25 @@
+---
+- name: Lab 3 - Save facts into a report file on localhost
+  hosts: all
+  gather_facts: true
+  become: false
+
+  tasks:
+    - name: Set safe IP variable
+      ansible.builtin.set_fact:
+        my_ip: >-
+          {{
+            (ansible_default_ipv4.address
+              if (ansible_default_ipv4 is defined and ansible_default_ipv4.address is defined)
+              else (ansible_all_ipv4_addresses | first | default('NO_IP_FOUND'))
+            )
+          }}
+
+    - name: Create report entry for each host on localhost
+      ansible.builtin.lineinfile:
+        path: /ansible/reports/host_report.txt
+        create: true
+        line: "HOST={{ inventory_hostname }} | IP={{ my_ip }} | OS={{ ansible_distribution }} {{ ansible_distribution_version }} | KERNEL={{ ansible_kernel }} | CPU={{ ansible_processor_vcpus }} | RAM={{ ansible_memtotal_mb }}MB"
+      delegate_to: localhost
+      run_once: false
+

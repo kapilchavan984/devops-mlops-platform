@@ -1,0 +1,62 @@
+---
+- name: Lab 4 - Collect uptime, disk, memory and save report on localhost
+  hosts: all
+  gather_facts: true
+  become: false
+
+  pre_tasks:
+    - name: Remove old report file (only once)
+      ansible.builtin.file:
+        path: /ansible/reports/system_report.txt
+        state: absent
+      delegate_to: localhost
+      run_once: true
+
+  tasks:
+    - name: Get uptime
+      ansible.builtin.command: uptime
+      register: uptime_out
+      changed_when: false
+
+    - name: Get disk usage
+      ansible.builtin.command: df -h
+      register: df_out
+      changed_when: false
+
+    - name: Get memory usage
+      ansible.builtin.command: free -m
+      register: free_out
+      changed_when: false
+
+    - name: Set safe IP variable
+      ansible.builtin.set_fact:
+        my_ip: >-
+          {{
+            (ansible_default_ipv4.address
+              if (ansible_default_ipv4 is defined and ansible_default_ipv4.address is defined)
+              else (ansible_all_ipv4_addresses | first | default('NO_IP_FOUND'))
+            )
+          }}
+
+    - name: Write system report per host to localhost file
+      ansible.builtin.blockinfile:
+        path: /ansible/reports/system_report.txt
+        create: true
+        marker: "### {mark} {{ inventory_hostname }} ###"
+        block: |
+          HOSTNAME : {{ inventory_hostname }}
+          IP       : {{ my_ip }}
+          OS       : {{ ansible_distribution }} {{ ansible_distribution_version }}
+          KERNEL   : {{ ansible_kernel }}
+
+          --- UPTIME ---
+          {{ uptime_out.stdout }}
+
+          --- DISK (df -h) ---
+          {{ df_out.stdout }}
+
+          --- MEMORY (free -m) ---
+          {{ free_out.stdout }}
+
+      delegate_to: localhost
+

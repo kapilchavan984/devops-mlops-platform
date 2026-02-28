@@ -1,0 +1,30 @@
+- name: Gather and Display System Information
+  hosts: all
+  gather_facts: yes
+  
+  tasks:
+    - name: Display hostname
+      debug:
+        msg: "Hostname: {{ ansible_hostname }}"
+    
+    - name: Display OS family
+      debug:
+        msg: "OS Family: {{ ansible_os_family }}"
+    
+    - name: Display IP address
+      debug:
+        msg: "IP Address: {{ ansible_default_ipv4.address }}"
+    
+    - name: Display available memory
+      debug:
+        msg: "Memory: {{ ansible_memtotal_mb }} MB"
+    
+    - name: Check if /tmp exists
+      stat:
+        path: /tmp
+      register: tmp_check
+    
+    - name: Report /tmp status
+      debug:
+        msg: "/tmp exists and is a directory"
+      when: tmp_check.stat.isdir is defined and tmp_check.stat.isdir

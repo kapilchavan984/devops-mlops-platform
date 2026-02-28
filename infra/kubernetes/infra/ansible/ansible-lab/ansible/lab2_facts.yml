@@ -1,0 +1,27 @@
+---
+- name: Lab 2 - Gather facts from nodes
+  hosts: all
+  become: false
+  gather_facts: true
+
+  tasks:
+    - name: Set safe IP address variable (fallback supported)
+      ansible.builtin.set_fact:
+        my_ip: >-
+          {{
+            (ansible_default_ipv4.address
+              if (ansible_default_ipv4 is defined and ansible_default_ipv4.address is defined)
+              else (ansible_all_ipv4_addresses | first | default('NO_IP_FOUND'))
+            )
+          }}
+
+    - name: Print OS details
+      ansible.builtin.debug:
+        msg:
+          - "Host: {{ inventory_hostname }}"
+          - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "Kernel: {{ ansible_kernel }}"
+          - "IP Address: {{ my_ip }}"
+          - "CPU Cores: {{ ansible_processor_vcpus }}"
+          - "RAM (MB): {{ ansible_memtotal_mb }}"
+

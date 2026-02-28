@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Kubernetes Progress Dashboard</title>
+    <style>
+        body {
+            font-family: Arial;
+            background:#0f172a;
+            color:white;
+            text-align:center;
+        }
+
+        .card {
+            background:#1e293b;
+            padding:30px;
+            margin:40px auto;
+            width:500px;
+            border-radius:10px;
+        }
+
+        .progress {
+            background:#334155;
+            border-radius:10px;
+            height:30px;
+        }
+
+        .bar {
+            height:30px;
+            background:#22c55e;
+            border-radius:10px;
+            width: {{percent}}%;
+        }
+    </style>
+</head>
+
+<body>
+
+<h1>🚀 Kubernetes 7000 Questions Dashboard</h1>
+
+<div class="card">
+    <h2>Completion: {{percent}}%</h2>
+
+    <div class="progress">
+        <div class="bar"></div>
+    </div>
+
+    <h3>Total Questions: {{total}}</h3>
+    <h3>Completed: {{completed}}</h3>
+    <h3>Remaining: {{remaining}}</h3>
+</div>
+
+</body>
+</html>

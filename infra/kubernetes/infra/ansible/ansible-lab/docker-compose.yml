@@ -1,0 +1,32 @@
+version: "3.8"
+
+services:
+  master:
+    build: ./master
+    container_name: ansible-master
+    hostname: master
+    volumes:
+      - ./ansible:/ansible
+    networks:
+      - ansible-net
+    tty: true
+
+  node1:
+    build: ./node
+    container_name: ansible-node1
+    hostname: node1
+    networks:
+      - ansible-net
+    tty: true
+
+  node2:
+    build: ./node
+    container_name: ansible-node2
+    hostname: node2
+    networks:
+      - ansible-net
+    tty: true
+
+networks:
+  ansible-net:
+    driver: bridge
